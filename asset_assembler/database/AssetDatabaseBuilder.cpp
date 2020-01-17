@@ -4,6 +4,7 @@
 #include "Salvation_Common/Memory/ThreadHeapAllocator.h"
 #include "sqlite/sqlite3.h"
 #include "rapidjson/document.h"
+#include "3rd/Compressonator/Compressonator/CMP_Framework/CMP_Framework.h"
 
 using namespace asset_assembler::database;
 using namespace salvation::memory;
@@ -173,7 +174,6 @@ static sqlite3* CreateDatabase(const char *pDstPath)
 
 static bool BuildTextures(Document &json, const char *pSrcRootPath, const char *pTextureBinPath)
 {
-    /*
     CMP_MipSet mipSet = {};
     CMP_ERROR result = CMP_LoadTexture("C:\\Temp\\bulbasaur\\textures\\Default_baseColor.png", &mipSet);
 
@@ -181,7 +181,6 @@ static bool BuildTextures(Document &json, const char *pSrcRootPath, const char *
     {
 
     }
-    */
 
     /*
     static constexpr const char *s_pImgProperty = "images";
