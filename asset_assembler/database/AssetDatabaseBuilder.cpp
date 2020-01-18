@@ -172,14 +172,47 @@ static sqlite3* CreateDatabase(const char *pDstPath)
     return nullptr;
 }
 
+/// CMP_Feedback_Proc
+/// Feedback function for conversion.
+/// \param[in] fProgress The percentage progress of the texture compression.
+/// \return non-NULL(true) value to abort conversion
+bool CMP_Feedback(CMP_FLOAT fProgress, CMP_DWORD_PTR pUser1, CMP_DWORD_PTR pUser2)
+{
+    return false;
+}
+
 static bool BuildTextures(Document &json, const char *pSrcRootPath, const char *pTextureBinPath)
 {
-    CMP_MipSet mipSet = {};
-    CMP_ERROR result = CMP_LoadTexture("C:\\Temp\\bulbasaur\\textures\\Default_baseColor.png", &mipSet);
+    CMP_MipSet mipSetIn = {};
+    CMP_ERROR result = CMP_LoadTexture("C:\\Temp\\bulbasaur\\textures\\Default_baseColor.png", &mipSetIn);
 
     if (result == CMP_OK)
     {
+        // Generate MIP chain if not already generated
+        if (mipSetIn.m_nMipLevels <= 1)
+        {
+            static constexpr CMP_INT s_MaxMipLevels = 10; // Turning a 4K texture into a 4x4
+            CMP_INT minSize = CMP_CalcMinMipSize(mipSetIn.m_nHeight, mipSetIn.m_nWidth, s_MaxMipLevels);
+            CMP_GenerateMIPLevels(&mipSetIn, minSize);
+        }
 
+        // Compress texture into BC3 for now #todo provide format as argument
+        {
+            KernelOptions kernelOptions = {};
+            kernelOptions.format = CMP_FORMAT_BC3;
+            kernelOptions.fquality = 1.0f;
+            kernelOptions.threads = 0; // Auto setting
+
+            CMP_MipSet mipSetOut = {};
+            result = CMP_ProcessTexture(&mipSetIn, &mipSetOut, kernelOptions, &CMP_Feedback);
+
+            if (result == CMP_OK)
+            {
+                result = CMP_SaveTexture("C:\\Temp\\bulbasaur.dds", &mipSetOut);
+
+                return (result == CMP_OK);
+            }
+        }
     }
 
     /*
