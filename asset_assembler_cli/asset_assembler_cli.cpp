@@ -8,7 +8,7 @@ using namespace salvation::memory;
 int main()
 {
     // All heavy memory allocations must go through salvation::memory::VirtualMemoryAllocator.
-    ThreadHeapAllocator::Init(GiB(1), MiB(10));
+    ThreadHeapAllocator::Init(GiB(1), MiB(100));
     AssetDatabaseBuilder::BuildDatabase("C:/Temp/bulbasaur/scene.gltf", "C:/Temp/AutoCreated.db");
 
     return 0;

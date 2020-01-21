@@ -2,6 +2,7 @@
 #include <cstdio>
 #include "AssetDatabaseBuilder.h"
 #include "Salvation_Common/Memory/ThreadHeapAllocator.h"
+#include "Salvation_Common/Memory/ThreadHeapSmartPointer.h"
 #include "sqlite/sqlite3.h"
 #include "rapidjson/document.h"
 #include "3rd/Compressonator/Compressonator/CMP_Framework/CMP_Framework.h"
@@ -9,6 +10,10 @@
 using namespace asset_assembler::database;
 using namespace salvation::memory;
 using namespace rapidjson;
+
+using str_smart_ptr = ThreadHeapSmartPointer<char>;
+
+static constexpr size_t s_MaxTextureFilePathLen = 1024;
 
 struct SQLiteRAII
 {
@@ -172,6 +177,31 @@ static sqlite3* CreateDatabase(const char *pDstPath)
     return nullptr;
 }
 
+
+static uint8_t* ReadFileContent(const char *pSrcPath, size_t &o_FileSize)
+{
+    uint8_t *pContent = nullptr;
+    FILE *pFile;
+    errno_t err = fopen_s(&pFile, pSrcPath, "r");
+    o_FileSize = 0;
+
+    if (err == 0 && pFile)
+    {
+        fseek(pFile, 0, SEEK_END);
+        size_t fileSize = ftell(pFile);
+        fseek(pFile, 0, SEEK_SET);
+
+        pContent = static_cast<uint8_t*>(ThreadHeapAllocator::Allocate(fileSize));
+
+        fread(pContent, sizeof(uint8_t), fileSize, pFile);
+        fclose(pFile);
+
+        o_FileSize = fileSize;
+    }
+
+    return pContent;
+}
+
 /// CMP_Feedback_Proc
 /// Feedback function for conversion.
 /// \param[in] fProgress The percentage progress of the texture compression.
@@ -181,19 +211,18 @@ bool CMP_Feedback(CMP_FLOAT fProgress, CMP_DWORD_PTR pUser1, CMP_DWORD_PTR pUser
     return false;
 }
 
-static bool BuildTextures(Document &json, const char *pSrcRootPath, const char *pTextureBinPath)
+static bool CompressTexture(const char *pSrcFilePath, const char *pDestFilePath)
 {
     CMP_MipSet mipSetIn = {};
-    CMP_ERROR result = CMP_LoadTexture("C:\\Temp\\bulbasaur\\textures\\Default_baseColor.png", &mipSetIn);
+    CMP_ERROR result = CMP_LoadTexture(pSrcFilePath, &mipSetIn);
 
     if (result == CMP_OK)
     {
         // Generate MIP chain if not already generated
         if (mipSetIn.m_nMipLevels <= 1)
         {
-            static constexpr CMP_INT s_MaxMipLevels = 10; // Turning a 4K texture into a 4x4
-            CMP_INT minSize = CMP_CalcMinMipSize(mipSetIn.m_nHeight, mipSetIn.m_nWidth, s_MaxMipLevels);
-            CMP_GenerateMIPLevels(&mipSetIn, minSize);
+            static constexpr CMP_INT s_MinMipSize = 4; // 4x4
+            CMP_GenerateMIPLevels(&mipSetIn, s_MinMipSize);
         }
 
         // Compress texture into BC3 for now #todo provide format as argument
@@ -208,21 +237,65 @@ static bool BuildTextures(Document &json, const char *pSrcRootPath, const char *
 
             if (result == CMP_OK)
             {
-                result = CMP_SaveTexture("C:\\Temp\\bulbasaur.dds", &mipSetOut);
+                result = CMP_SaveTexture(pDestFilePath, &mipSetOut);
 
                 return (result == CMP_OK);
             }
         }
     }
 
-    /*
+    return (result == CMP_OK);
+}
+
+static bool PackageCompressedTextures(const char *pCompressedFilePaths, size_t fileCount, const char *pDestRootPath)
+{
+    static constexpr char s_pTexturesBinFileName[] = "Textures.bin";
+    static constexpr size_t s_TexturesBinFileNameLen = sizeof(s_pTexturesBinFileName) - 1;
+
+    size_t destRootPathLen = strlen(pDestRootPath);
+    size_t destFilePathLen = destRootPathLen + s_TexturesBinFileNameLen + 1;
+    char *pDestFilePath = static_cast<char*>(salvation::memory::StackAlloc(destFilePathLen));
+    pDestFilePath[destFilePathLen] = 0;
+
+    memcpy(pDestFilePath, pDestRootPath, destRootPathLen);
+    memcpy(pDestFilePath + destRootPathLen, s_pTexturesBinFileName, s_TexturesBinFileNameLen);
+
+    FILE *pFile;
+    errno_t err = fopen_s(&pFile, pDestFilePath, "wb");
+
+    if (err == 0 && pFile)
+    {
+        for (size_t i = 0; i < fileCount; ++i)
+        {
+            size_t fileSize;
+            const char *pCompressedFilePath = pCompressedFilePaths + (i * s_MaxTextureFilePathLen);
+            const uint8_t *pCompressedFile = ReadFileContent(pCompressedFilePath, fileSize);
+
+            fwrite(pCompressedFile, sizeof(uint8_t), fileSize, pFile);
+        }
+
+        fclose(pFile);
+    }
+
+    return true;
+}
+
+static bool BuildTextures(Document &json, const char *pSrcRootPath, const char *pDestRootPath)
+{
     static constexpr const char *s_pImgProperty = "images";
     static constexpr const char *s_pUriProperty = "uri";
+    static constexpr const char s_DdsExt[] = ".dds";
+
+    size_t srcRootPathLen = strlen(pSrcRootPath);
+    size_t destRootPathLen = strlen(pDestRootPath);
 
     if (json.HasMember(s_pImgProperty) && json[s_pImgProperty].IsArray())
     {
         Value &images = json[s_pImgProperty];
         SizeType imageCount = images.Size();
+
+        str_smart_ptr compressedPaths = ThreadHeapAllocator::Allocate(s_MaxTextureFilePathLen * imageCount);
+
         for (SizeType i = 0; i < imageCount; ++i)
         {
             Value &img = images[i];
@@ -230,10 +303,35 @@ static bool BuildTextures(Document &json, const char *pSrcRootPath, const char *
             {
                 Value &uri = img[s_pUriProperty];
                 const char *pTextureUri = uri.GetString();
+
+                const char *extPoint = strrchr(pTextureUri, '.');
+                if (extPoint)
+                {
+                    // Source texture file path
+                    size_t uriLen = strlen(pTextureUri);
+                    size_t srcFilePathLen = srcRootPathLen + uriLen;
+                    char *pSrcFilePath = reinterpret_cast<char*>(ThreadHeapAllocator::Allocate(srcFilePathLen + 1));
+                    pSrcFilePath[srcFilePathLen] = 0;
+                    memcpy(pSrcFilePath, pSrcRootPath, srcRootPathLen);
+                    memcpy(pSrcFilePath + srcRootPathLen, pTextureUri, uriLen);
+
+                    // Destination compressed texture file path
+                    size_t filePathNoExtLen =
+                        static_cast<size_t>(reinterpret_cast<uintptr_t>(extPoint) - reinterpret_cast<uintptr_t>(pTextureUri));
+                    size_t dstLen = destRootPathLen + filePathNoExtLen + sizeof(s_DdsExt);
+                    char *pCompressedPath = compressedPaths + (s_MaxTextureFilePathLen * i);
+                    pCompressedPath[dstLen] = 0;
+                    memcpy(pCompressedPath, pDestRootPath, destRootPathLen);
+                    memcpy(pCompressedPath + destRootPathLen, pTextureUri, filePathNoExtLen);
+                    memcpy(pCompressedPath + destRootPathLen + filePathNoExtLen, s_DdsExt, sizeof(s_DdsExt));
+
+                    CompressTexture(pSrcFilePath, pCompressedPath);
+                }
             }
         }
+
+        PackageCompressedTextures(compressedPaths, imageCount, pDestRootPath);
     }
-    */
 
     return false;
 }
@@ -247,25 +345,15 @@ bool AssetDatabaseBuilder::BuildDatabase(const char *pSrcPath, const char *pDstP
     {
         SQLiteRAII dbRAII(pDb);
 
-        FILE *pJsonFile;
-        errno_t err = fopen_s(&pJsonFile, pSrcPath, "r");
+        size_t jsonContentSize;
+        char *pJsonContent = reinterpret_cast<char*>(ReadFileContent(pSrcPath, jsonContentSize));
 
-        if (err == 0 && pJsonFile)
+        if (pJsonContent)
         {
-            fseek(pJsonFile, 0, SEEK_END);
-            size_t fileSize = ftell(pJsonFile);
-            fseek(pJsonFile, 0, SEEK_SET);
-
-            char *pJsonContent = static_cast<char*>(ThreadHeapAllocator::Allocate(fileSize));
-            fread(pJsonContent, sizeof(char), fileSize, pJsonFile);
-            fclose(pJsonFile);
-
             Document json;
             json.Parse(pJsonContent);
 
             ThreadHeapAllocator::Release(pJsonContent);
-
-            static constexpr char s_pTexturesBinFileName[] = "Textures.bin";
 
             const char *pDstRootPathEnd = strrchr(pDstPath, '/');
             const char *pSrcRootPathEnd = strrchr(pSrcPath, '/');
@@ -276,33 +364,18 @@ bool AssetDatabaseBuilder::BuildDatabase(const char *pSrcPath, const char *pDstP
                     static_cast<size_t>(reinterpret_cast<uintptr_t>(pDstRootPathEnd) - reinterpret_cast<uintptr_t>(pDstPath)) + 1;
                 size_t srcRootFolderStrLen =
                     static_cast<size_t>(reinterpret_cast<uintptr_t>(pSrcRootPathEnd) - reinterpret_cast<uintptr_t>(pSrcPath)) + 1;
-                size_t texturesBinFilePathStrLen = sizeof(s_pTexturesBinFileName) + dstRootFolderStrLen;
 
-                char *pTextureDstPath = static_cast<char*>(salvation::memory::StackAlloc(texturesBinFilePathStrLen + 1));
+                char *pTextureDstPath = static_cast<char*>(salvation::memory::StackAlloc(dstRootFolderStrLen + 1));
                 char *pSrcRootPath = static_cast<char*>(salvation::memory::StackAlloc(srcRootFolderStrLen + 1));
 
-                pTextureDstPath[texturesBinFilePathStrLen] = 0;
+                pTextureDstPath[dstRootFolderStrLen] = 0;
                 pSrcRootPath[srcRootFolderStrLen] = 0;
 
                 memcpy(pTextureDstPath, pDstPath, dstRootFolderStrLen);
-                memcpy(pTextureDstPath + dstRootFolderStrLen, s_pTexturesBinFileName, sizeof(s_pTexturesBinFileName));
                 memcpy(pSrcRootPath, pSrcPath, srcRootFolderStrLen);
 
                 BuildTextures(json, pSrcRootPath, pTextureDstPath);
             }
-
-            /*
-            fs::path dstPath(pDstPath);
-            fs::path textureDstPath = dstPath.replace_filename("Textures").replace_extension(".bin");
-
-            fs::path srcPath(pSrcPath);
-            fs::path srcRoot = srcPath.remove_filename();
-
-            if (BuildTextures(json, srcRoot.string().c_str(), textureDstPath.string().c_str()))
-            {
-
-            }
-            */
         }
     }
 
