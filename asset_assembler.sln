@@ -13,7 +13,7 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "1. StaticLibs", "1. StaticL
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "0. 3rd", "0. 3rd", "{D9573FE2-8F39-4E3B-8083-BF3F6BF28ED5}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "CMP_Framework", "asset_assembler\3rd\Compressonator\CMP_Framework.vcxproj", "{2F22C2E9-1AD1-48FC-AF1B-9F92E893DEB4}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "CMP_Framework", "asset_assembler\CMP_Framework.vcxproj", "{2F22C2E9-1AD1-48FC-AF1B-9F92E893DEB4}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
