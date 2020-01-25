@@ -3,4 +3,4 @@
 	url = https://github.com/jsbourdon/salvation_common.git
 [submodule "asset_assembler/3rd/Compressonator"]
 	path = asset_assembler/3rd/Compressonator
-	url = https://github.com/GPUOpen-Tools/Compressonator.git
+	url = https://github.com/jsbourdon/Compressonator.git
