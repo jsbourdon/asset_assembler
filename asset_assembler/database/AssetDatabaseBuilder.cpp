@@ -35,7 +35,7 @@ bool AssetDatabaseBuilder::CreateInsertStatements()
     static constexpr char s_TextureStr[] = "INSERT INTO Texture(ByteSize, ByteOffset, Format, PackedDataID) VALUES(?1, ?2, ?3, ?4);";
     static constexpr char s_BufferStr[] = "INSERT INTO Buffer(ByteSize, ByteOffset, PackedDataID) VALUES(?1, ?2, ?3);";
     static constexpr char s_MaterialStr[] = "INSERT INTO Material(DiffuseTextureID) VALUES(?1);";
-    static constexpr char s_BufferViewStr[] = "INSERT INTO BufferView(BufferID, ByteSize, ByteOffset, ComponentType) VALUES((?1, ?2, ?3, ?4);";
+    static constexpr char s_BufferViewStr[] = "INSERT INTO BufferView(BufferID, ByteSize, ByteOffset, ComponentType) VALUES(?1, ?2, ?3, ?4);";
 
     return
         sqlite3_prepare_v2(m_pDb, s_PackedDataStr, -1, &m_Stmts.m_pPackedDataStmt, nullptr) == SQLITE_OK &&
@@ -497,7 +497,7 @@ bool AssetDatabaseBuilder::InsertMaterialMetadata(Document &json)
 
 bool AssetDatabaseBuilder::InsertBufferViewMetadata(Document &json)
 {
-    
+    return false;
 }
 
 bool AssetDatabaseBuilder::InsertMetadata(Document &json)
