@@ -177,6 +177,9 @@
     <ProjectReference Include="..\asset_assembler\asset_assembler.vcxproj">
       <Project>{782c8fe7-b175-45d0-a964-866807f6928b}</Project>
     </ProjectReference>
+    <ProjectReference Include="..\asset_assembler\CMP_Framework.vcxproj">
+      <Project>{2f22c2e9-1ad1-48fc-af1b-9f92e893deb4}</Project>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

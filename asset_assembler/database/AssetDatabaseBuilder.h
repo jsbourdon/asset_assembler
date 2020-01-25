@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <stdio.h>
 #include "asset_assembler/rapidjson/fwd.h"
 
 struct sqlite3;
@@ -39,6 +40,8 @@ namespace asset_assembler
                 sqlite3_stmt*   m_pPackedDataStmt;
                 sqlite3_stmt*   m_pTextureStmt;
                 sqlite3_stmt*   m_pBufferStmt;
+                sqlite3_stmt*   m_pMaterialStmt;
+                sqlite3_stmt*   m_pBufferViewStmt;
             };
 
             static uint8_t* ReadFileContent(const char *pSrcPath, size_t &o_FileSize);
@@ -54,11 +57,15 @@ namespace asset_assembler
             int64_t     InsertPackagedDataEntry(const char *pFilePath, salvation::asset::PackedDataType dataType);
             bool        InsertTextureDataEntry(int64_t byteSize, int64_t byteOffset, int32_t format, int64_t packedDataId);
             bool        InsertBufferDataEntry(int64_t byteSize, int64_t byteOffset, int64_t packedDataId);
+            bool        InsertMaterialDataEntry(int64_t textureId);
+            bool        InsertBufferViewDataEntry(int64_t bufferId, int64_t byteSize, int64_t byteOffset, int32_t componentType);
+
+            bool        InsertMaterialMetadata(Document &json);
+            bool        InsertBufferViewMetadata(Document &json);
+            bool        InsertMetadata(Document &json);
 
             bool        BuildTextures(Document &json, const char *pSrcRootPath, const char *pDestRootPath);
-            bool        CompressTexture(const char *pSrcFilePath, const char *pDestFilePath);
-            bool        PackageTextures(const char *pCompressedFilePaths, size_t fileCount, const char *pDestRootPath);
-
+            int64_t     CompressTexture(const char *pSrcFilePath, FILE *pDestFile, int64_t packedDataId);
             bool        BuildMeshes(Document &json, const char *pSrcRootPath, const char *pDestRootPath);
 
         private:

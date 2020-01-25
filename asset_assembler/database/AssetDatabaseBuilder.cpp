@@ -34,11 +34,15 @@ bool AssetDatabaseBuilder::CreateInsertStatements()
     static constexpr char s_PackedDataStr[] = "INSERT INTO PackedData(FilePath, DataType) VALUES (?1, ?2);";
     static constexpr char s_TextureStr[] = "INSERT INTO Texture(ByteSize, ByteOffset, Format, PackedDataID) VALUES(?1, ?2, ?3, ?4);";
     static constexpr char s_BufferStr[] = "INSERT INTO Buffer(ByteSize, ByteOffset, PackedDataID) VALUES(?1, ?2, ?3);";
+    static constexpr char s_MaterialStr[] = "INSERT INTO Material(DiffuseTextureID) VALUES(?1);";
+    static constexpr char s_BufferViewStr[] = "INSERT INTO BufferView(BufferID, ByteSize, ByteOffset, ComponentType) VALUES((?1, ?2, ?3, ?4);";
 
     return
         sqlite3_prepare_v2(m_pDb, s_PackedDataStr, -1, &m_Stmts.m_pPackedDataStmt, nullptr) == SQLITE_OK &&
         sqlite3_prepare_v2(m_pDb, s_TextureStr, -1, &m_Stmts.m_pTextureStmt, nullptr) == SQLITE_OK &&
-        sqlite3_prepare_v2(m_pDb, s_BufferStr, -1, &m_Stmts.m_pBufferStmt, nullptr) == SQLITE_OK;
+        sqlite3_prepare_v2(m_pDb, s_BufferStr, -1, &m_Stmts.m_pBufferStmt, nullptr) == SQLITE_OK &&
+        sqlite3_prepare_v2(m_pDb, s_MaterialStr, -1, &m_Stmts.m_pMaterialStmt, nullptr) == SQLITE_OK &&
+        sqlite3_prepare_v2(m_pDb, s_BufferViewStr, -1, &m_Stmts.m_pBufferViewStmt, nullptr) == SQLITE_OK;
 }
 
 void AssetDatabaseBuilder::ReleaseInsertStatements()
@@ -46,6 +50,8 @@ void AssetDatabaseBuilder::ReleaseInsertStatements()
     if (m_Stmts.m_pPackedDataStmt) sqlite3_finalize(m_Stmts.m_pPackedDataStmt);
     if (m_Stmts.m_pTextureStmt) sqlite3_finalize(m_Stmts.m_pTextureStmt);
     if (m_Stmts.m_pBufferStmt) sqlite3_finalize(m_Stmts.m_pBufferStmt);
+    if (m_Stmts.m_pMaterialStmt) sqlite3_finalize(m_Stmts.m_pMaterialStmt);
+    if (m_Stmts.m_pBufferViewStmt) sqlite3_finalize(m_Stmts.m_pBufferViewStmt);
 }
 
 bool AssetDatabaseBuilder::CreateTables()
@@ -92,7 +98,7 @@ bool AssetDatabaseBuilder::CreateTables()
         ID INTEGER PRIMARY KEY,
         ByteSize INTEGER NOT NULL,
         ByteOffset INTEGER NOT NULL,
-        Attribute INTEGER NOT NULL,
+        ComponentType INTEGER NOT NULL,
         BufferID INTEGER NOT NULL,
         FOREIGN KEY(BufferID) REFERENCES Buffer(ID)
     );)";
@@ -109,20 +115,12 @@ bool AssetDatabaseBuilder::CreateTables()
     CREATE TABLE IF NOT EXISTS SubMesh
     (
         ID INTEGER PRIMARY KEY,
+        MeshID INTEGER NOT NULL,
         IndexBufferID INTEGER NOT NULL,
         MaterialID INTEGER,
+        FOREIGN KEY(MeshID) REFERENCES Mesh(ID),
         FOREIGN KEY(IndexBufferID) REFERENCES BufferView(ID),
         FOREIGN KEY(MaterialID) REFERENCES Material(ID)
-    );)";
-
-    static constexpr char pCreateMeshSubMeshTable[] = R"(
-    CREATE TABLE IF NOT EXISTS MeshSubMesh
-    (
-        MeshID INTEGER NOT NULL,
-        SubMeshID INTEGER NOT NULL,
-        PRIMARY KEY(MeshID, SubMeshID),
-        FOREIGN KEY(MeshID) REFERENCES Mesh(ID),
-        FOREIGN KEY(SubMeshID) REFERENCES SubMesh(ID)
     );)";
 
     static constexpr char pCreateSubMeshVertexStreamsTable[] = R"(
@@ -130,7 +128,8 @@ bool AssetDatabaseBuilder::CreateTables()
     (
         SubMeshID INTEGER NOT NULL,
         BufferViewID INTEGER NOT NULL,
-        PRIMARY KEY(SubMeshID, BufferViewID),
+        Attribute INTEGER NOT NULL,
+        PRIMARY KEY(SubMeshID, BufferViewID, Attribute),
         FOREIGN KEY(SubMeshID) REFERENCES SubMesh(ID),
         FOREIGN KEY(BufferViewID) REFERENCES BufferView(ID)
     );)";
@@ -144,7 +143,6 @@ bool AssetDatabaseBuilder::CreateTables()
         pCreateBufferViewTable,
         pCreateMaterialTable,
         pCreateSubMeshTable,
-        pCreateMeshSubMeshTable,
         pCreateSubMeshVertexStreamsTable
     };
 
@@ -219,25 +217,17 @@ static bool CMP_Feedback(CMP_FLOAT fProgress, CMP_DWORD_PTR pUser1, CMP_DWORD_PT
     return false;
 }
 
-bool AssetDatabaseBuilder::CompressTexture(const char *pSrcFilePath, const char *pDestFilePath)
+int64_t AssetDatabaseBuilder::CompressTexture(const char *pSrcFilePath, FILE *pDestFile, int64_t packedDataId)
 {
+    int64_t byteSize = -1;
+
     CMP_MipSet mipSetIn = {};
+    CMP_MipSet mipSetOut = {};
+
     CMP_ERROR result = CMP_LoadTexture(pSrcFilePath, &mipSetIn);
 
     if (result == CMP_OK)
     {
-        // Create destination folder if necessary
-        {
-            str_smart_ptr dirPath = filesystem::ExtractDirectoryPath(pDestFilePath);
-            if (!filesystem::DirectoryExists(dirPath))
-            {
-                if (!filesystem::CreateDirectory(dirPath))
-                {
-                    return false;
-                }
-            }
-        }
-
         // Generate MIP chain if not already generated
         if (mipSetIn.m_nMipLevels <= 1)
         {
@@ -251,18 +241,34 @@ bool AssetDatabaseBuilder::CompressTexture(const char *pSrcFilePath, const char 
             kernelOptions.format = CMP_FORMAT_BC3;
             kernelOptions.fquality = 1.0f;
             kernelOptions.threads = 0; // Auto setting
-
-            CMP_MipSet mipSetOut = {};
+            
             result = CMP_ProcessTexture(&mipSetIn, &mipSetOut, kernelOptions, &CMP_Feedback);
 
             if (result == CMP_OK)
             {
-                result = CMP_SaveTexture(pDestFilePath, &mipSetOut);
+                // #todo Properly save the whole mip chain
+                for (int i = 0; i < 1/*mipSetOut.m_nMipLevels*/; ++i)
+                {
+                    CMP_MipLevel *pMipData;
+                    CMP_GetMipLevel(&pMipData, &mipSetOut, i, 0);
+                    int64_t mipByteSize = pMipData->m_dwLinearSize;
+
+                    if (fwrite(pMipData->m_pbData, sizeof(uint8_t), mipByteSize, pDestFile) != mipByteSize)
+                    {
+                        byteSize = -1;
+                        break;
+                    }
+
+                    byteSize += mipByteSize;
+                }
             }
         }
     }
 
-    return (result == CMP_OK);
+    CMP_FreeMipSet(&mipSetIn);
+    CMP_FreeMipSet(&mipSetOut);
+
+    return byteSize;
 }
 
 int64_t AssetDatabaseBuilder::InsertPackagedDataEntry(const char *pFilePath, salvation::asset::PackedDataType dataType)
@@ -308,67 +314,34 @@ bool AssetDatabaseBuilder::InsertBufferDataEntry(int64_t byteSize, int64_t byteO
         sqlite3_step(pStmt) == SQLITE_DONE;
 }
 
-bool AssetDatabaseBuilder::PackageTextures(const char *pCompressedFilePaths, size_t fileCount, const char *pDestRootPath)
+bool AssetDatabaseBuilder::InsertMaterialDataEntry(int64_t textureId)
 {
-    static constexpr char s_pTexturesBinFileName[] = "Textures.bin";
-    static constexpr size_t s_TexturesBinFileNameLen = sizeof(s_pTexturesBinFileName) - 1;
-    static constexpr int32_t s_TextureFormat = static_cast<int32_t>(TextureFormat::BC3);
+    sqlite3_stmt *pStmt = m_Stmts.m_pMaterialStmt;
 
-    bool success = false;
+    return
+        sqlite3_reset(pStmt) == SQLITE_OK &&
+        sqlite3_bind_int64(pStmt, 1, textureId) == SQLITE_OK &&
+        sqlite3_step(pStmt) == SQLITE_DONE;
+}
 
-    size_t destRootPathLen = strlen(pDestRootPath);
-    size_t destFilePathLen = destRootPathLen + s_TexturesBinFileNameLen;
-    char *pDestFilePath = static_cast<char *>(salvation::memory::StackAlloc(destFilePathLen + 1));
-    pDestFilePath[destFilePathLen] = 0;
+bool AssetDatabaseBuilder::InsertBufferViewDataEntry(int64_t bufferId, int64_t byteSize, int64_t byteOffset, int32_t componentType)
+{
+    sqlite3_stmt *pStmt = m_Stmts.m_pBufferViewStmt;
 
-    memcpy(pDestFilePath, pDestRootPath, destRootPathLen);
-    memcpy(pDestFilePath + destRootPathLen, s_pTexturesBinFileName, s_TexturesBinFileNameLen);
-
-    FILE *pFile;
-    errno_t err = fopen_s(&pFile, pDestFilePath, "wb");
-
-    if (err == 0 && pFile)
-    {
-        int64_t packedDataId = InsertPackagedDataEntry(s_pTexturesBinFileName, PackedDataType::Textures);
-
-        if (packedDataId >= 0)
-        {
-            bool writeSucceeded = true;
-            int64_t currentByteOffset = 0;
-
-            for (size_t i = 0; i < fileCount && writeSucceeded; ++i)
-            {
-                size_t fileSize;
-                const char *pCompressedFilePath = pCompressedFilePaths + (i * s_MaxRscFilePathLen);
-                const uint8_t *pCompressedFile = ReadFileContent(pCompressedFilePath, fileSize);
-
-                writeSucceeded = 
-                    fileSize > 0 && 
-                    fwrite(pCompressedFile, sizeof(uint8_t), fileSize, pFile) == fileSize &&
-                    InsertTextureDataEntry(static_cast<int64_t>(fileSize), currentByteOffset, s_TextureFormat, packedDataId);
-
-                currentByteOffset += static_cast<int64_t>(fileSize);
-            }
-
-            fclose(pFile);
-
-            success = writeSucceeded;
-        }
-    }
-
-    return success;
+    return
+        sqlite3_reset(pStmt) == SQLITE_OK &&
+        sqlite3_bind_int64(pStmt, 1, bufferId) == SQLITE_OK &&
+        sqlite3_bind_int64(pStmt, 2, byteSize) == SQLITE_OK &&
+        sqlite3_bind_int64(pStmt, 3, byteOffset) == SQLITE_OK &&
+        sqlite3_bind_int(pStmt, 4, componentType) == SQLITE_OK &&
+        sqlite3_step(pStmt) == SQLITE_DONE;
 }
 
 bool AssetDatabaseBuilder::BuildTextures(Document &json, const char *pSrcRootPath, const char *pDestRootPath)
 {
+    static constexpr const char s_pTexturesBinFileName[] = "Textures.bin";
     static constexpr const char s_pImgProperty[] = "images";
     static constexpr const char s_pUriProperty[] = "uri";
-    static constexpr const char s_DdsExt[] = ".dds";
-    static constexpr const char s_TmpDirectoryName[] = "Temp/";
-    static constexpr size_t s_TmpDirectoryNameLen = sizeof(s_TmpDirectoryName) - 1;
-
-    size_t srcRootPathLen = strlen(pSrcRootPath);
-    size_t destRootPathLen = strlen(pDestRootPath);
 
     if (json.HasMember(s_pImgProperty) && json[s_pImgProperty].IsArray())
     {
@@ -377,7 +350,21 @@ bool AssetDatabaseBuilder::BuildTextures(Document &json, const char *pSrcRootPat
 
         if (imageCount > 0)
         {
-            str_smart_ptr compressedPaths = ThreadHeapAllocator::Allocate(s_MaxRscFilePathLen * imageCount);
+            str_smart_ptr pDestFilePath = salvation::filesystem::AppendPaths(pDestRootPath, s_pTexturesBinFileName);
+            FILE *pDestFile = nullptr;
+
+            if (fopen_s(&pDestFile, pDestFilePath, "wb") != 0)
+            {
+                return false;
+            }
+
+            int64_t packedDataId = InsertPackagedDataEntry(s_pTexturesBinFileName, PackedDataType::Textures);
+            if (packedDataId < 0)
+            {
+                return false;
+            }
+
+            int64_t currentByteOffset = 0;
 
             for (SizeType i = 0; i < imageCount; ++i)
             {
@@ -387,37 +374,21 @@ bool AssetDatabaseBuilder::BuildTextures(Document &json, const char *pSrcRootPat
                     Value &uri = img[s_pUriProperty];
                     const char *pTextureUri = uri.GetString();
 
-                    const char *extPoint = strrchr(pTextureUri, '.');
-                    if (extPoint)
+                    str_smart_ptr pSrcFilePath = salvation::filesystem::AppendPaths(pSrcRootPath, pTextureUri);
+                    int64_t textureByteSize = CompressTexture(pSrcFilePath, pDestFile, packedDataId);
+                    if (textureByteSize <= 0)
                     {
-                        // Source texture file path
-                        size_t uriLen = strlen(pTextureUri);
-                        size_t srcFilePathLen = srcRootPathLen + uriLen;
-                        str_smart_ptr pSrcFilePath = ThreadHeapAllocator::Allocate(srcFilePathLen + 1);
-                        pSrcFilePath[srcFilePathLen] = 0;
-                        memcpy(pSrcFilePath, pSrcRootPath, srcRootPathLen);
-                        memcpy(pSrcFilePath + srcRootPathLen, pTextureUri, uriLen);
-
-                        // Destination compressed texture file path
-                        size_t filePathNoExtLen =
-                            static_cast<size_t>(reinterpret_cast<uintptr_t>(extPoint) - reinterpret_cast<uintptr_t>(pTextureUri));
-                        size_t dstLen = destRootPathLen + filePathNoExtLen + sizeof(s_DdsExt);
-                        char *pCompressedPath = compressedPaths + (s_MaxRscFilePathLen * i);
-                        pCompressedPath[dstLen] = 0;
-                        memcpy(pCompressedPath, pDestRootPath, destRootPathLen);
-                        memcpy(pCompressedPath + destRootPathLen, s_TmpDirectoryName, s_TmpDirectoryNameLen);
-                        memcpy(pCompressedPath + destRootPathLen + s_TmpDirectoryNameLen, pTextureUri, filePathNoExtLen);
-                        memcpy(pCompressedPath + destRootPathLen + s_TmpDirectoryNameLen + filePathNoExtLen, s_DdsExt, sizeof(s_DdsExt));
-
-                        if (!CompressTexture(pSrcFilePath, pCompressedPath))
-                        {
-                            return false;
-                        }
+                        return false;
                     }
+
+                    if (!InsertTextureDataEntry(textureByteSize, currentByteOffset, static_cast<int32_t>(TextureFormat::BC3), packedDataId))
+                    {
+                        return false;
+                    }
+
+                    currentByteOffset += textureByteSize;
                 }
             }
-
-            return PackageTextures(compressedPaths, imageCount, pDestRootPath);
         }
     }
 
@@ -444,14 +415,7 @@ bool AssetDatabaseBuilder::BuildMeshes(Document &json, const char *pSrcRootPath,
             }
 
             str_smart_ptr bufferPaths = ThreadHeapAllocator::Allocate(s_MaxRscFilePathLen * bufferCount);
-
-            size_t srcRootPathLen = strlen(pSrcRootPath);
-            size_t destRootPathLen = strlen(pDestRootPath);
-            size_t destFilePathLen = destRootPathLen + sizeof(s_pBuffersBinFileName);
-            str_smart_ptr destFilePath = ThreadHeapAllocator::Allocate(destFilePathLen);
-            destFilePath[destFilePathLen - 1] = 0;
-            memcpy(destFilePath, pDestRootPath, destRootPathLen);
-            memcpy(destFilePath + destRootPathLen, s_pBuffersBinFileName, sizeof(s_pBuffersBinFileName));
+            str_smart_ptr destFilePath = salvation::filesystem::AppendPaths(pDestRootPath, s_pBuffersBinFileName);
 
             FILE *pDestFile = nullptr;
             if (fopen_s(&pDestFile, destFilePath, "wb") != 0)
@@ -470,15 +434,8 @@ bool AssetDatabaseBuilder::BuildMeshes(Document &json, const char *pSrcRootPath,
                     Value &uri = buffer[s_pUriProperty];
                     const char *pBufferUri = uri.GetString();
 
-                    // Source texture file path
-                    size_t uriLen = strlen(pBufferUri);
-                    size_t srcFilePathLen = srcRootPathLen + uriLen;
-                    str_smart_ptr pSrcFilePath = ThreadHeapAllocator::Allocate(srcFilePathLen + 1);
-                    pSrcFilePath[srcFilePathLen] = 0;
-                    memcpy(pSrcFilePath, pSrcRootPath, srcRootPathLen);
-                    memcpy(pSrcFilePath + srcRootPathLen, pBufferUri, uriLen);
-
                     size_t fileSize = 0;
+                    str_smart_ptr pSrcFilePath = salvation::filesystem::AppendPaths(pSrcRootPath, pBufferUri);
                     uint8_t *pData = ReadFileContent(pSrcFilePath, fileSize);
 
                     writeSucceeded =
@@ -499,6 +456,60 @@ bool AssetDatabaseBuilder::BuildMeshes(Document &json, const char *pSrcRootPath,
     return true;
 }
 
+bool AssetDatabaseBuilder::InsertMaterialMetadata(Document &json)
+{
+    static constexpr const char s_pMaterialsProperty[] = "materials";
+    static constexpr const char s_pPBRProperty[] = "pbrMetallicRoughness";
+    static constexpr const char s_pBaseTextureProperty[] = "baseColorTexture";
+    static constexpr const char s_pIndexProperty[] = "index";
+
+    if (json.HasMember(s_pMaterialsProperty) && json[s_pMaterialsProperty].IsArray())
+    {
+        Value &materials = json[s_pMaterialsProperty];
+        SizeType materialCount = materials.Size();
+
+        for (SizeType i = 0; i < materialCount; ++i)
+        {
+            Value &material = materials[i];
+            if (material.HasMember(s_pPBRProperty) && material[s_pPBRProperty].IsObject())
+            {
+                Value &pbr = material[s_pPBRProperty];
+                if (pbr.HasMember(s_pBaseTextureProperty) && pbr[s_pBaseTextureProperty].IsObject())
+                {
+                    Value &baseTexture = pbr[s_pBaseTextureProperty];
+                    if (baseTexture.HasMember(s_pIndexProperty) && baseTexture[s_pIndexProperty].IsInt())
+                    {
+                        Value &indexProperty = baseTexture[s_pIndexProperty];
+                        int index = indexProperty.GetInt() + 1; // +1 since sqlite integer primary keys start at 1
+
+                        if (!InsertMaterialDataEntry(index))
+                        {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
+bool AssetDatabaseBuilder::InsertBufferViewMetadata(Document &json)
+{
+    
+}
+
+bool AssetDatabaseBuilder::InsertMetadata(Document &json)
+{
+    // Mesh
+    // SubMesh
+    // SubMeshVertexStreams
+
+    return 
+        InsertMaterialMetadata(json) &&
+        InsertBufferViewMetadata(json);
+}
 
 bool AssetDatabaseBuilder::BuildDatabase(const char *pSrcPath, const char *pDstPath)
 {
@@ -538,7 +549,8 @@ bool AssetDatabaseBuilder::BuildDatabase(const char *pSrcPath, const char *pDstP
                 success = 
                     CreateInsertStatements() && 
                     BuildTextures(json, pSrcRootPath, pDstRootPath) &&
-                    BuildMeshes(json, pSrcRootPath, pDstRootPath);
+                    BuildMeshes(json, pSrcRootPath, pDstRootPath) &&
+                    InsertMetadata(json);
             }
         }
     }
