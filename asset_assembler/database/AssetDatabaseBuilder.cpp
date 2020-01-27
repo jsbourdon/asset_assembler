@@ -22,6 +22,7 @@ AssetDatabaseBuilder::StatementRAII::~StatementRAII()
 void AssetDatabaseBuilder::ReleaseResources()
 {
     ReleaseInsertStatements();
+    ReleaseUpdateStatements();
 
     if (m_pDb)
     {
@@ -35,23 +36,46 @@ bool AssetDatabaseBuilder::CreateInsertStatements()
     static constexpr char s_TextureStr[] = "INSERT INTO Texture(ByteSize, ByteOffset, Format, PackedDataID) VALUES(?1, ?2, ?3, ?4);";
     static constexpr char s_BufferStr[] = "INSERT INTO Buffer(ByteSize, ByteOffset, PackedDataID) VALUES(?1, ?2, ?3);";
     static constexpr char s_MaterialStr[] = "INSERT INTO Material(DiffuseTextureID) VALUES(?1);";
-    static constexpr char s_BufferViewStr[] = "INSERT INTO BufferView(BufferID, ByteSize, ByteOffset, ComponentType) VALUES(?1, ?2, ?3, ?4);";
+    static constexpr char s_BufferViewStr[] = "INSERT INTO BufferView(BufferID, ByteSize, ByteOffset, Stride) VALUES(?1, ?2, ?3, ?4);";
+    static constexpr char s_MeshStr[] = "INSERT INTO Mesh(Name) VALUES(?1);";
+    static constexpr char s_SubMeshStr[] = "INSERT INTO SubMesh(MeshID, IndexBufferID, MaterialID) VALUES(?1, ?2, ?3);";
+    static constexpr char s_VertexStreamStr[] = "INSERT INTO SubMeshVertexStreams(SubMeshID, BufferViewID, Attribute) VALUES(?1, ?2, ?3);";
 
     return
-        sqlite3_prepare_v2(m_pDb, s_PackedDataStr, -1, &m_Stmts.m_pPackedDataStmt, nullptr) == SQLITE_OK &&
-        sqlite3_prepare_v2(m_pDb, s_TextureStr, -1, &m_Stmts.m_pTextureStmt, nullptr) == SQLITE_OK &&
-        sqlite3_prepare_v2(m_pDb, s_BufferStr, -1, &m_Stmts.m_pBufferStmt, nullptr) == SQLITE_OK &&
-        sqlite3_prepare_v2(m_pDb, s_MaterialStr, -1, &m_Stmts.m_pMaterialStmt, nullptr) == SQLITE_OK &&
-        sqlite3_prepare_v2(m_pDb, s_BufferViewStr, -1, &m_Stmts.m_pBufferViewStmt, nullptr) == SQLITE_OK;
+        sqlite3_prepare_v2(m_pDb, s_PackedDataStr, -1, &m_InsertStmts.m_pPackedDataStmt, nullptr) == SQLITE_OK &&
+        sqlite3_prepare_v2(m_pDb, s_TextureStr, -1, &m_InsertStmts.m_pTextureStmt, nullptr) == SQLITE_OK &&
+        sqlite3_prepare_v2(m_pDb, s_BufferStr, -1, &m_InsertStmts.m_pBufferStmt, nullptr) == SQLITE_OK &&
+        sqlite3_prepare_v2(m_pDb, s_MaterialStr, -1, &m_InsertStmts.m_pMaterialStmt, nullptr) == SQLITE_OK &&
+        sqlite3_prepare_v2(m_pDb, s_BufferViewStr, -1, &m_InsertStmts.m_pBufferViewStmt, nullptr) == SQLITE_OK &&
+        sqlite3_prepare_v2(m_pDb, s_MeshStr, -1, &m_InsertStmts.m_pMeshStmt, nullptr) == SQLITE_OK &&
+        sqlite3_prepare_v2(m_pDb, s_SubMeshStr, -1, &m_InsertStmts.m_pSubMeshStmt, nullptr) == SQLITE_OK && 
+        sqlite3_prepare_v2(m_pDb, s_VertexStreamStr, -1, &m_InsertStmts.m_pVertexStreamStmt, nullptr) == SQLITE_OK;
 }
+
+bool AssetDatabaseBuilder::CreateUpdateStatements()
+{
+    static constexpr char s_PackedDataStr[] = "UPDATE PackedData SET ByteSize = ?2 WHERE ID = ?1;";
+
+    return
+        sqlite3_prepare_v2(m_pDb, s_PackedDataStr, -1, &m_UpdateStmts.m_pPackedDataStmt, nullptr) == SQLITE_OK;
+}
+
 
 void AssetDatabaseBuilder::ReleaseInsertStatements()
 {
-    if (m_Stmts.m_pPackedDataStmt) sqlite3_finalize(m_Stmts.m_pPackedDataStmt);
-    if (m_Stmts.m_pTextureStmt) sqlite3_finalize(m_Stmts.m_pTextureStmt);
-    if (m_Stmts.m_pBufferStmt) sqlite3_finalize(m_Stmts.m_pBufferStmt);
-    if (m_Stmts.m_pMaterialStmt) sqlite3_finalize(m_Stmts.m_pMaterialStmt);
-    if (m_Stmts.m_pBufferViewStmt) sqlite3_finalize(m_Stmts.m_pBufferViewStmt);
+    if (m_InsertStmts.m_pPackedDataStmt) sqlite3_finalize(m_InsertStmts.m_pPackedDataStmt);
+    if (m_InsertStmts.m_pTextureStmt) sqlite3_finalize(m_InsertStmts.m_pTextureStmt);
+    if (m_InsertStmts.m_pBufferStmt) sqlite3_finalize(m_InsertStmts.m_pBufferStmt);
+    if (m_InsertStmts.m_pMaterialStmt) sqlite3_finalize(m_InsertStmts.m_pMaterialStmt);
+    if (m_InsertStmts.m_pBufferViewStmt) sqlite3_finalize(m_InsertStmts.m_pBufferViewStmt);
+    if (m_InsertStmts.m_pMeshStmt) sqlite3_finalize(m_InsertStmts.m_pMeshStmt);
+    if (m_InsertStmts.m_pSubMeshStmt) sqlite3_finalize(m_InsertStmts.m_pSubMeshStmt);
+    if (m_InsertStmts.m_pVertexStreamStmt) sqlite3_finalize(m_InsertStmts.m_pVertexStreamStmt);
+}
+
+void AssetDatabaseBuilder::ReleaseUpdateStatements()
+{
+    if (m_UpdateStmts.m_pPackedDataStmt) sqlite3_finalize(m_UpdateStmts.m_pPackedDataStmt);
 }
 
 bool AssetDatabaseBuilder::CreateTables()
@@ -68,7 +92,8 @@ bool AssetDatabaseBuilder::CreateTables()
     (
         ID INTEGER PRIMARY KEY,
         FilePath varchar(255) NOT NULL,
-        DataType INTEGER NOT NULL
+        DataType INTEGER NOT NULL,
+        ByteSize INTEGER
     );)";
 
     static constexpr char pCreateTextureTable[] = R"(
@@ -98,7 +123,7 @@ bool AssetDatabaseBuilder::CreateTables()
         ID INTEGER PRIMARY KEY,
         ByteSize INTEGER NOT NULL,
         ByteOffset INTEGER NOT NULL,
-        ComponentType INTEGER NOT NULL,
+        Stride INTEGER NOT NULL,
         BufferID INTEGER NOT NULL,
         FOREIGN KEY(BufferID) REFERENCES Buffer(ID)
     );)";
@@ -219,7 +244,7 @@ static bool CMP_Feedback(CMP_FLOAT fProgress, CMP_DWORD_PTR pUser1, CMP_DWORD_PT
 
 int64_t AssetDatabaseBuilder::CompressTexture(const char *pSrcFilePath, FILE *pDestFile, int64_t packedDataId)
 {
-    int64_t byteSize = -1;
+    int64_t byteSize = 0;
 
     CMP_MipSet mipSetIn = {};
     CMP_MipSet mipSetOut = {};
@@ -274,7 +299,7 @@ int64_t AssetDatabaseBuilder::CompressTexture(const char *pSrcFilePath, FILE *pD
 int64_t AssetDatabaseBuilder::InsertPackagedDataEntry(const char *pFilePath, salvation::asset::PackedDataType dataType)
 {
     int64_t packageID = -1;
-    sqlite3_stmt *pStmt = m_Stmts.m_pPackedDataStmt;
+    sqlite3_stmt *pStmt = m_InsertStmts.m_pPackedDataStmt;
 
     if (
         sqlite3_reset(pStmt) == SQLITE_OK && 
@@ -290,7 +315,7 @@ int64_t AssetDatabaseBuilder::InsertPackagedDataEntry(const char *pFilePath, sal
 
 bool AssetDatabaseBuilder::InsertTextureDataEntry(int64_t byteSize, int64_t byteOffset, int32_t format, int64_t packedDataId)
 {
-    sqlite3_stmt *pStmt = m_Stmts.m_pTextureStmt;
+    sqlite3_stmt *pStmt = m_InsertStmts.m_pTextureStmt;
 
     return 
         sqlite3_reset(pStmt) == SQLITE_OK &&
@@ -304,7 +329,7 @@ bool AssetDatabaseBuilder::InsertTextureDataEntry(int64_t byteSize, int64_t byte
 
 bool AssetDatabaseBuilder::InsertBufferDataEntry(int64_t byteSize, int64_t byteOffset, int64_t packedDataId)
 {
-    sqlite3_stmt *pStmt = m_Stmts.m_pBufferStmt;
+    sqlite3_stmt *pStmt = m_InsertStmts.m_pBufferStmt;
 
     return
         sqlite3_reset(pStmt) == SQLITE_OK &&
@@ -316,7 +341,7 @@ bool AssetDatabaseBuilder::InsertBufferDataEntry(int64_t byteSize, int64_t byteO
 
 bool AssetDatabaseBuilder::InsertMaterialDataEntry(int64_t textureId)
 {
-    sqlite3_stmt *pStmt = m_Stmts.m_pMaterialStmt;
+    sqlite3_stmt *pStmt = m_InsertStmts.m_pMaterialStmt;
 
     return
         sqlite3_reset(pStmt) == SQLITE_OK &&
@@ -324,16 +349,73 @@ bool AssetDatabaseBuilder::InsertMaterialDataEntry(int64_t textureId)
         sqlite3_step(pStmt) == SQLITE_DONE;
 }
 
-bool AssetDatabaseBuilder::InsertBufferViewDataEntry(int64_t bufferId, int64_t byteSize, int64_t byteOffset, int32_t componentType)
+bool AssetDatabaseBuilder::InsertBufferViewDataEntry(int64_t bufferId, int64_t byteSize, int64_t byteOffset, int32_t stride)
 {
-    sqlite3_stmt *pStmt = m_Stmts.m_pBufferViewStmt;
+    sqlite3_stmt *pStmt = m_InsertStmts.m_pBufferViewStmt;
 
     return
         sqlite3_reset(pStmt) == SQLITE_OK &&
         sqlite3_bind_int64(pStmt, 1, bufferId) == SQLITE_OK &&
         sqlite3_bind_int64(pStmt, 2, byteSize) == SQLITE_OK &&
         sqlite3_bind_int64(pStmt, 3, byteOffset) == SQLITE_OK &&
-        sqlite3_bind_int(pStmt, 4, componentType) == SQLITE_OK &&
+        sqlite3_bind_int(pStmt, 4, stride) == SQLITE_OK &&
+        sqlite3_step(pStmt) == SQLITE_DONE;
+}
+
+int64_t AssetDatabaseBuilder::InsertMeshDataEntry(const char *pName)
+{
+    int64_t meshId = -1;
+    sqlite3_stmt *pStmt = m_InsertStmts.m_pMeshStmt;
+
+    if (
+        sqlite3_reset(pStmt) == SQLITE_OK &&
+        sqlite3_bind_text(pStmt, 1, pName, -1, SQLITE_STATIC) == SQLITE_OK &&
+        sqlite3_step(pStmt) == SQLITE_DONE)
+    {
+        meshId = sqlite3_last_insert_rowid(m_pDb);
+    }
+
+    return meshId;
+}
+
+int64_t AssetDatabaseBuilder::InsertSubMeshDataEntry(int64_t meshId, int64_t indexBufferViewId, int64_t materialId)
+{
+    int64_t subMeshId = -1;
+    sqlite3_stmt *pStmt = m_InsertStmts.m_pSubMeshStmt;
+
+    if (
+        sqlite3_reset(pStmt) == SQLITE_OK &&
+        sqlite3_bind_int64(pStmt, 1, meshId) == SQLITE_OK &&
+        sqlite3_bind_int64(pStmt, 2, indexBufferViewId) == SQLITE_OK &&
+        sqlite3_bind_int64(pStmt, 3, materialId) == SQLITE_OK &&
+        sqlite3_step(pStmt) == SQLITE_DONE)
+    {
+        subMeshId = sqlite3_last_insert_rowid(m_pDb);
+    }
+
+    return subMeshId;
+}
+
+bool AssetDatabaseBuilder::InsertVertexStreamDataEntry(int64_t subMeshId, int64_t bufferViewId, int32_t attribute)
+{
+    sqlite3_stmt *pStmt = m_InsertStmts.m_pVertexStreamStmt;
+
+    return
+        sqlite3_reset(pStmt) == SQLITE_OK &&
+        sqlite3_bind_int64(pStmt, 1, subMeshId) == SQLITE_OK &&
+        sqlite3_bind_int64(pStmt, 2, bufferViewId) == SQLITE_OK &&
+        sqlite3_bind_int(pStmt, 3, attribute) == SQLITE_OK &&
+        sqlite3_step(pStmt) == SQLITE_DONE;
+}
+
+bool AssetDatabaseBuilder::UpdatePackagedDataEntry(int64_t packagedDataId, int64_t byteSize)
+{
+    sqlite3_stmt *pStmt = m_UpdateStmts.m_pPackedDataStmt;
+
+    return
+        sqlite3_reset(pStmt) == SQLITE_OK &&
+        sqlite3_bind_int64(pStmt, 1, packagedDataId) == SQLITE_OK &&
+        sqlite3_bind_int64(pStmt, 2, byteSize) == SQLITE_OK &&
         sqlite3_step(pStmt) == SQLITE_DONE;
 }
 
@@ -388,6 +470,11 @@ bool AssetDatabaseBuilder::BuildTextures(Document &json, const char *pSrcRootPat
 
                     currentByteOffset += textureByteSize;
                 }
+            }
+
+            if (!UpdatePackagedDataEntry(packedDataId, currentByteOffset))
+            {
+                return false;
             }
         }
     }
@@ -449,6 +536,11 @@ bool AssetDatabaseBuilder::BuildMeshes(Document &json, const char *pSrcRootPath,
 
             fclose(pDestFile);
 
+            if (writeSucceeded && !UpdatePackagedDataEntry(packedDataId, currentByteOffset))
+            {
+                return false;
+            }
+
             return writeSucceeded;
         }
     }
@@ -495,20 +587,225 @@ bool AssetDatabaseBuilder::InsertMaterialMetadata(Document &json)
     return true;
 }
 
+ComponentType AssetDatabaseBuilder::GetComponentType(const char *pGLTFType, int glTFComponentType)
+{
+    static constexpr uint32_t s_glTFByteCode = 5120;
+    static constexpr uint32_t s_glTFUnsignedByteCode = 5121;
+    static constexpr uint32_t s_glTFShortCode = 5122;
+    static constexpr uint32_t s_glTFUnsignedShortCode = 5123;
+    static constexpr uint32_t s_glTUnsignedIntCode = 5125;
+    static constexpr uint32_t s_glTFFloatCode = 5126;
+
+    static constexpr const char *s_pGLTFVectorTypes[] =
+    {
+        "VEC2",
+        "VEC3",
+        "VEC4",
+        "MAT2",
+        "MAT3",
+        "MAT4"
+    };
+
+    static constexpr ComponentType s_VectorTypes[] =
+    {
+        ComponentType::Vec2,
+        ComponentType::Vec3,
+        ComponentType::Vec4,
+        ComponentType::Matrix2x2,
+        ComponentType::Matrix3x3,
+        ComponentType::Matrix4x4
+    };
+
+    if (strcmp(pGLTFType, "SCALAR") == 0)
+    {
+        switch (glTFComponentType)
+        {
+        case s_glTFByteCode:
+        case s_glTFUnsignedByteCode:
+            return ComponentType::Scalar_Byte;
+        case s_glTFShortCode:
+        case s_glTFUnsignedShortCode:
+            return ComponentType::Scalar_Short;
+        case s_glTUnsignedIntCode:
+            return ComponentType::Scalar_Int;
+        case s_glTFFloatCode:
+            return ComponentType::Scalar_Float;
+        default:
+            return ComponentType::Unknown;
+        }
+    }
+
+    for (size_t i = 0; i < ARRAY_SIZE(s_pGLTFVectorTypes); ++i)
+    {
+        if (strcmp(pGLTFType, s_pGLTFVectorTypes[i]) == 0)
+        {
+            return s_VectorTypes[i];
+        }
+    }
+
+    return ComponentType::Unknown;
+}
+
 bool AssetDatabaseBuilder::InsertBufferViewMetadata(Document &json)
 {
-    return false;
+    static constexpr const char s_pAccessorsProperty[] = "accessors";
+    static constexpr const char s_pBufferViewsProperty[] = "bufferViews";
+    static constexpr const char s_pBufferViewProperty[] = "bufferView";
+    static constexpr const char s_pByteOffsetProperty[] = "byteOffset";
+    static constexpr const char s_pComponentTypeProperty[] = "componentType";
+    static constexpr const char s_pTypeProperty[] = "type";
+    static constexpr const char s_pCountProperty[] = "count";
+    static constexpr const char s_pBufferProperty[] = "buffer";
+
+    if (
+        json.HasMember(s_pAccessorsProperty) && json[s_pAccessorsProperty].IsArray() &&
+        json.HasMember(s_pBufferViewsProperty) && json[s_pBufferViewsProperty].IsArray())
+    {
+        Value &bufferViews = json[s_pBufferViewsProperty];
+        Value &accessors = json[s_pAccessorsProperty];
+        SizeType accessorCount = accessors.Size();
+
+        for (SizeType i = 0; i < accessorCount; ++i)
+        {
+            Value &accessor = accessors[i];
+            if (accessor.HasMember(s_pBufferViewProperty) && accessor[s_pBufferViewProperty].IsInt())
+            {
+                int bufferViewIndex = accessor[s_pBufferViewProperty].GetInt();
+                Value &bufferView = bufferViews[bufferViewIndex];
+
+                if (
+                    accessor.HasMember(s_pTypeProperty) && accessor[s_pTypeProperty].IsString() &&
+                    accessor.HasMember(s_pCountProperty) && accessor[s_pCountProperty].IsInt() &&
+                    accessor.HasMember(s_pComponentTypeProperty) && accessor[s_pComponentTypeProperty].IsInt() &&
+                    bufferView.HasMember(s_pBufferProperty) && bufferView[s_pBufferProperty].IsInt())
+                {
+                    int64_t bufferId = bufferView[s_pBufferProperty].GetInt() + 1; // +1 since sqlite integer primary keys start at 1
+
+                    const char *pType = accessor[s_pTypeProperty].GetString();
+                    int glTFComponentType = accessor[s_pComponentTypeProperty].GetInt();
+                    int count = accessor[s_pCountProperty].GetInt();
+
+                    ComponentType componentType = GetComponentType(pType, glTFComponentType);
+                    int32_t stride = AssetDatabase::ComponentTypeByteSize(componentType);
+                    int64_t byteSize = stride * static_cast<int64_t>(count);
+
+                    int64_t accessorByteOffset = 0;
+                    int64_t bufferViewByteOffset = 0;
+
+                    if (accessor.HasMember(s_pByteOffsetProperty) && accessor[s_pByteOffsetProperty].IsInt())
+                    {
+                        accessorByteOffset = accessor[s_pByteOffsetProperty].GetInt();
+                    }
+
+                    if (bufferView.HasMember(s_pByteOffsetProperty) && bufferView[s_pByteOffsetProperty].IsInt())
+                    {
+                        bufferViewByteOffset = bufferView[s_pByteOffsetProperty].GetInt();
+                    }
+
+                    int64_t byteOffset = accessorByteOffset + bufferViewByteOffset;
+
+                    if (!InsertBufferViewDataEntry(bufferId, byteSize, byteOffset, stride))
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+
+
+    return true;
+}
+
+bool AssetDatabaseBuilder::InsertMeshMetadata(Document &json)
+{
+    static constexpr const char s_pMeshesProperty[] = "meshes";
+    static constexpr const char s_pPrimitivesProperty[] = "primitives";
+    static constexpr const char s_pIndicesProperty[] = "indices";
+    static constexpr const char s_pMaterialProperty[] = "material";
+    static constexpr const char s_pAttributesProperty[] = "attributes";
+
+    if (json.HasMember(s_pMeshesProperty) && json[s_pMeshesProperty].IsArray())
+    {
+        Value &meshes = json[s_pMeshesProperty];
+        SizeType meshCount = meshes.Size();
+
+        for (SizeType meshIndex = 0; meshIndex < meshCount; ++meshIndex)
+        {
+            Value &mesh = meshes[meshIndex];
+
+            if (mesh.HasMember(s_pPrimitivesProperty) && mesh[s_pPrimitivesProperty].IsArray())
+            {
+                Value &primitives = mesh[s_pPrimitivesProperty];
+                SizeType primCount = primitives.Size();
+
+                for (SizeType primIndex = 0; primIndex < primCount; ++primIndex)
+                {
+                    Value &primitive = primitives[primIndex];
+
+                    if (
+                        primitive.HasMember(s_pIndicesProperty) && primitive[s_pIndicesProperty].IsInt() &&
+                        primitive.HasMember(s_pMaterialProperty) && primitive[s_pMaterialProperty].IsInt() &&
+                        primitive.HasMember(s_pAttributesProperty) && primitive[s_pAttributesProperty].IsObject())
+                    {
+                        // +1 since sqlite integer primary keys start at 1
+                        int64_t indexBufferId = primitive[s_pIndicesProperty].GetInt() + 1;
+                        int64_t materialId = primitive[s_pMaterialProperty].GetInt() + 1;
+
+                        int64_t meshId = InsertMeshDataEntry("Default Name");
+                        int64_t subMeshId = InsertSubMeshDataEntry(meshId, indexBufferId, materialId);
+
+                        Value &attributes = primitive[s_pAttributesProperty];
+
+                        if (meshId < 0 || subMeshId < 0 || !InsertVertexStreamsMetadata(attributes, subMeshId))
+                        {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
+bool AssetDatabaseBuilder::InsertVertexStreamsMetadata(Value &attributes, int64_t subMeshId)
+{
+    static constexpr const char *s_ppAttributeSemantics[] =
+    {
+        "POSITION",
+        "NORMAL",
+        "TANGENT",
+        "TEXCOORD_0",
+        "TEXCOORD_1",
+        "COLOR_0"
+    };
+
+    static_assert(ARRAY_SIZE(s_ppAttributeSemantics) == static_cast<size_t>(AttributeSemantic::Count));
+
+    for (size_t i = 0; i < ARRAY_SIZE(s_ppAttributeSemantics); ++i)
+    {
+        const char *pAttributeSemantic = s_ppAttributeSemantics[i];
+        if (attributes.HasMember(pAttributeSemantic) && attributes[pAttributeSemantic].IsInt())
+        {
+            int bufferViewId = attributes[pAttributeSemantic].GetInt() + 1; // +1 since sqlite integer primary keys start at 1
+            if (!InsertVertexStreamDataEntry(subMeshId, bufferViewId, static_cast<int32_t>(i)))
+            {
+                return false;
+            }
+        }
+    }
+
+    return true;
 }
 
 bool AssetDatabaseBuilder::InsertMetadata(Document &json)
 {
-    // Mesh
-    // SubMesh
-    // SubMeshVertexStreams
-
     return 
         InsertMaterialMetadata(json) &&
-        InsertBufferViewMetadata(json);
+        InsertBufferViewMetadata(json) && 
+        InsertMeshMetadata(json);
 }
 
 bool AssetDatabaseBuilder::BuildDatabase(const char *pSrcPath, const char *pDstPath)
@@ -548,6 +845,7 @@ bool AssetDatabaseBuilder::BuildDatabase(const char *pSrcPath, const char *pDstP
 
                 success = 
                     CreateInsertStatements() && 
+                    CreateUpdateStatements() &&
                     BuildTextures(json, pSrcRootPath, pDstRootPath) &&
                     BuildMeshes(json, pSrcRootPath, pDstRootPath) &&
                     InsertMetadata(json);

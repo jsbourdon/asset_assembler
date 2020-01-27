@@ -12,7 +12,16 @@ int main()
     // All heavy memory allocations must go through salvation::memory::VirtualMemoryAllocator.
     ThreadHeapAllocator::Init(GiB(1), MiB(100));
     AssetDatabaseBuilder builder;
-    builder.BuildDatabase("D:/Temp/bulbasaur/scene.gltf", "D:/Temp/Assets/AssetsDB.db");
+    bool success = builder.BuildDatabase("D:/Temp/bulbasaur/scene.gltf", "D:/Temp/Assets/AssetsDB.db");
+
+    if (success)
+    {
+        printf_s("Asset generation successful");
+    }
+    else
+    {
+        printf_s("Asset generation FAILED!");
+    }
 
     return 0;
 }
