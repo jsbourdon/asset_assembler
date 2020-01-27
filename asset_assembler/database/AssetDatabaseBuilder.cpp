@@ -4,7 +4,7 @@
 #include "Salvation_Common/Memory/ThreadHeapSmartPointer.h"
 #include "Salvation_Common/FileSystem/FileSystem.h"
 #include "Salvation_Common/Assets/AssetDatabase.h"
-#include "sqlite/sqlite3.h"
+#include "Salvation_Common/sqlite/sqlite3.h"
 #include "rapidjson/document.h"
 #include "3rd/Compressonator/Compressonator/CMP_Framework/CMP_Framework.h"
 
